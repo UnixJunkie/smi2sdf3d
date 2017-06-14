@@ -1,11 +1,17 @@
 #!/usr/bin/python
 
+# generation of up to N low energy conformers
+# from 2D input (smi) to 3D output (sdf)
+# see Ebejer et. al.
+# "Freely Available Conformer Generation Methods: How Good Are They?"
+# JCIM, 2012, DOI: 10.1021/ci2004658 for technical details
+
 import sys
 import rdkit
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-if len (sys.argv) != 4:
+if len(sys.argv) != 4:
     print "usage: %s N input.smi output.sdf" % sys.argv[0]
     sys.exit(1)
 
@@ -18,13 +24,15 @@ def RobustSmilesMolSupplier(filename):
         for line in f:
             split = line.split()
             smile = split[0]
-            # mol_name = split[1]
+            name = split[1]
             mol = Chem.MolFromSmiles(smile)
-            yield mol
+            yield name, mol
 
 reader = RobustSmilesMolSupplier(input_smi)
 writer = Chem.SDWriter(output_sdf)
 
+# nb. conformers to generate prior to energy minimization
+# as an empirical function of the molecule's flexibility
 def how_many_conformers(mol):
     nb_rot_bonds = AllChem.CalcNumRotatableBonds(mol)
     if nb_rot_bonds <= 7:
@@ -34,6 +42,7 @@ def how_many_conformers(mol):
     else:
         return 300
 
+# to prune too similar conformers
 rmsd_threshold = 0.35 # Angstrom
 
 # keep only conformers which are far enough from the reference conformer
@@ -43,26 +52,26 @@ def rmsd_filter(mol, ref_conf, l):
     refConfId = ref_conf.GetId()
     for e, curr_conf in l:
         currConfId = curr_conf.GetId()
-        if AllChem.GetBestRMS(mol, mol, refConfId, currConfId) > rmsd_threshold:
+        if AllChem.GetBestRMS(mol, mol, refConfId, currConfId) \
+           > rmsd_threshold:
             res.append((e, curr_conf))
     return res
 
-for mol in reader:
+for name, mol in reader:
     if mol:
         n = how_many_conformers(mol)
         print "n: %d" % n
         mol_H = Chem.AddHs(mol)
-        # FBR: check doc for EmbedMultipleConfs
         confIds = AllChem.EmbedMultipleConfs(mol_H, n)
         conf_energies = []
         # FF minimization
-        for confId in confIds:
-            ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=confId)
+        for cid in confIds:
+            ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
             ff.Minimize()
             energy = ff.CalcEnergy()
-            conformer = mol_H.GetConformer(confId)
+            conformer = mol_H.GetConformer(cid)
+            print "cid: %d e: %f" % (cid, energy)
             conf_energies.append((energy, conformer))
-        # remove neighbors
         # sort by increasing E
         sorted(conf_energies, key=lambda x: x[0])
         # output non neighbor ones
@@ -76,6 +85,7 @@ for mol in reader:
             conf_energies = rmsd_filter(mol_H, conf, conf_energies)
         # write them out
         res = Chem.Mol(mol_H)
+        res.SetProp("_Name", name)
         res.RemoveAllConformers()
         for e, conf in kept:
             confId = conf.GetId()
