@@ -63,7 +63,7 @@ def rmsd_filter(mol, ref_conf, l):
 for name, mol in reader:
     if mol:
         n = how_many_conformers(mol)
-        print "init pool size: %d" % n
+        print "init pool size for %s: %d" % (name, n)
         mol_H = Chem.AddHs(mol)
         print "generating starting conformers ..."
         confIds = AllChem.EmbedMultipleConfs(mol_H, n)
@@ -92,7 +92,7 @@ for name, mol in reader:
             # remove neighbors
             conf_energies = rmsd_filter(mol_H, conf, conf_energies)
         # write them out
-        print "kept %d confs" % len(kept)
+        print "kept %d confs for %s" % (len(kept), name)
         res = Chem.Mol(mol_H)
         res.RemoveAllConformers()
         for e, conf in kept:
