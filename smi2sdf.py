@@ -48,50 +48,57 @@ rmsd_threshold = 0.35 # Angstrom
 # keep only conformers which are far enough from the reference conformer
 # (the one of lowest energy)
 def rmsd_filter(mol, ref_conf, l):
+    # print "before: %d" % (len(l))
     res = []
     refConfId = ref_conf.GetId()
     for e, curr_conf in l:
         currConfId = curr_conf.GetId()
-        if AllChem.GetBestRMS(mol, mol, refConfId, currConfId) \
-           > rmsd_threshold:
+        rms = AllChem.GetBestRMS(mol, mol, refConfId, currConfId)
+        # print "e: %f rms: %f" % (e, rms)
+        if rms > rmsd_threshold:
             res.append((e, curr_conf))
+    # print "after: %d" % (len(res))
     return res
 
 for name, mol in reader:
     if mol:
         n = how_many_conformers(mol)
-        print "n: %d" % n
+        print "init pool size: %d" % n
         mol_H = Chem.AddHs(mol)
+        print "generating starting conformers ..."
         confIds = AllChem.EmbedMultipleConfs(mol_H, n)
         conf_energies = []
         # FF minimization
+        print "FF minimization ..."
         for cid in confIds:
             ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
+            # print "E before: %f" % ff.CalcEnergy()
             ff.Minimize()
             energy = ff.CalcEnergy()
+            # print "E after: %f" % energy
             conformer = mol_H.GetConformer(cid)
-            print "cid: %d e: %f" % (cid, energy)
+            # print "cid: %d e: %f" % (cid, energy)
             conf_energies.append((energy, conformer))
         # sort by increasing E
-        sorted(conf_energies, key=lambda x: x[0])
-        # output non neighbor ones
+        conf_energies = sorted(conf_energies, key=lambda x: x[0])
+        # output non neighbor conformers
         nb_out = 0
         kept = []
+        print "RMSD pruning ..."
         while nb_out < n_confs and len(conf_energies) > 0:
-            ++nb_out
+            nb_out += 1
             (e, conf) = conf_energies.pop(0)
             kept.append((e, conf))
             # remove neighbors
             conf_energies = rmsd_filter(mol_H, conf, conf_energies)
         # write them out
+        print "kept %d confs" % len(kept)
         res = Chem.Mol(mol_H)
-        res.SetProp("_Name", name)
         res.RemoveAllConformers()
         for e, conf in kept:
-            confId = conf.GetId()
-            conf = mol_H.GetConformer(confId)
-            res.AddConformer(conf, assignId=True)
-        writer.write(res)
+            cid = res.AddConformer(conf, assignId=True)
+            name_cid = "%s_%04d" % (name, cid)
+            res.SetProp("_Name", name_cid)
+            # print "cid: %d" % cid
+            writer.write(res, confId=cid)
 writer.close()
-
-# FBR: check molecule names in output
