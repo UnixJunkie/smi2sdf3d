@@ -9,12 +9,9 @@ if len (sys.argv) != 4:
     print "usage: %s N input.smi output.sdf" % sys.argv[0]
     sys.exit(1)
 
-# n_confs = int(sys.argv[1])
-# input_smi = sys.argv[2]
-# output_sdf = sys.argv[3]
-n_confs = 10
-input_smi = "ethanol.smi"
-output_sdf = "ethanol.sdf"
+n_confs = int(sys.argv[1])
+input_smi = sys.argv[2]
+output_sdf = sys.argv[3]
 
 def RobustSmilesMolSupplier(filename):
     with open(filename) as f:
