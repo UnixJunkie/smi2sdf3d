@@ -54,7 +54,7 @@ def how_many_conformers(mol):
 
 # keep only conformers which are far enough from the reference conformer
 # (the one of lowest energy)
-def rmsd_filter(mol, ref_conf, conf_energies):
+def rmsd_filter(mol, ref_conf, conf_energies, rmsd_threshold):
     refConfId = ref_conf.GetId()
     return [(e, curr_conf) for e, curr_conf in conf_energies
             if AllChem.GetBestRMS(mol, mol, refConfId, curr_conf.GetId()) \
@@ -67,47 +67,50 @@ if len(sys.argv) != 4:
     print("usage: %s N input.smi output.sdf" % sys.argv[0])
     sys.exit(1)
 
-n_confs = int(sys.argv[1])
-input_smi = sys.argv[2]
-output_sdf = sys.argv[3]
+def main():
+    n_confs = int(sys.argv[1])
+    input_smi = sys.argv[2]
+    output_sdf = sys.argv[3]
+    nprocs = 1 # for parallelization
+    # to prune too similar conformers
+    rmsd_threshold = 0.35 # Angstrom
+    with closing(Chem.SDWriter(output_sdf)) as writer:
+        for name, mol in RobustSmilesMolSupplier(input_smi):
+            if mol is None:
+                continue
+            n = how_many_conformers(mol)
+            print("init pool size for %s: %d" % (name, n))
+            mol_H = Chem.AddHs(mol)
+            res = Chem.Mol(mol_H)
+            res.RemoveAllConformers()
+            print("generating starting conformers ...")
+            conf_energies = []
+            print("FF minimization ...")
+            for cid in AllChem.EmbedMultipleConfs(mol_H, n):
+                ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
+                # print("E before: %f" % ff.CalcEnergy())
+                ff.Minimize()
+                energy = ff.CalcEnergy()
+                # print("E after: %f" % energy)
+                conformer = mol_H.GetConformer(cid)
+                # print("cid: %d e: %f" % (cid, energy))
+                conf_energies.append((energy, conformer))
+            # sort by increasing E
+            conf_energies = sorted(conf_energies, key=lambda x: x[0])
+            # output non neighbor conformers
+            kept = []
+            print("RMSD pruning ...")
+            while len(kept) < n_confs and len(conf_energies) > 0:
+                (e, conf) = conf_energies.pop(0)
+                kept.append((e, conf))
+                cid = res.AddConformer(conf, assignId=True)
+                name_cid = "%s_%04d" % (name, cid)
+                res.SetProp("_Name", name_cid)
+                # write this one out so that user can see some progress
+                writer.write(res, confId=cid)
+                # remove neighbors
+                conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
+            print("kept %d confs for %s" % (len(kept), name))
 
-# to prune too similar conformers
-rmsd_threshold = 0.35 # Angstrom
-
-with closing(Chem.SDWriter(output_sdf)) as writer:
-    for name, mol in RobustSmilesMolSupplier(input_smi):
-        if mol is None:
-            continue
-        n = how_many_conformers(mol)
-        print("init pool size for %s: %d" % (name, n))
-        mol_H = Chem.AddHs(mol)
-        res = Chem.Mol(mol_H)
-        res.RemoveAllConformers()
-        print("generating starting conformers ...")
-        conf_energies = []
-        print("FF minimization ...")
-        for cid in AllChem.EmbedMultipleConfs(mol_H, n):
-            ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
-            # print("E before: %f" % ff.CalcEnergy())
-            ff.Minimize()
-            energy = ff.CalcEnergy()
-            # print("E after: %f" % energy)
-            conformer = mol_H.GetConformer(cid)
-            # print("cid: %d e: %f" % (cid, energy))
-            conf_energies.append((energy, conformer))
-        # sort by increasing E
-        conf_energies = sorted(conf_energies, key=lambda x: x[0])
-        # output non neighbor conformers
-        kept = []
-        print("RMSD pruning ...")
-        while len(kept) < n_confs and len(conf_energies) > 0:
-            (e, conf) = conf_energies.pop(0)
-            kept.append((e, conf))
-            cid = res.AddConformer(conf, assignId=True)
-            name_cid = "%s_%04d" % (name, cid)
-            res.SetProp("_Name", name_cid)
-            # write this one out so that user can see some progress
-            writer.write(res, confId=cid)
-            # remove neighbors
-            conf_energies = rmsd_filter(mol_H, conf, conf_energies)
-        print("kept %d confs for %s" % (len(kept), name))
+if __name__ == '__main__':
+    main()
