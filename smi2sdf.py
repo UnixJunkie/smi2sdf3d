@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# https://stackoverflow.com/questions/2429511/why-do-people-write-usr-bin-env-python-on-the-first-line-of-a-python-script
 
 # generation of up to N low energy conformers
 # from 2D input (smi) to 3D output (sdf)
@@ -26,9 +25,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-# Your code is Python 2 only because of the print statements. Use the import to replace it with the 
-# print function and you have support for both (or even drop Python 2 completely)
-from __future__ import print_function 
+from __future__ import print_function
 
 import sys
 from contextlib import closing
@@ -37,14 +34,13 @@ import rdkit
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-
-# This is a Python 3 version of your code. It uses extended unpacking
 def RobustSmilesMolSupplier(filename):
     with open(filename) as f:
         for line in f:
-            smile, name, *ignore = line.split()
+            words = line.split()
+            smile = words[0]
+            name = words[1]
             yield name, Chem.MolFromSmiles(smile)
-
 
 # nb. conformers to generate prior to energy minimization
 # as an empirical function of the molecule's flexibility
@@ -54,33 +50,19 @@ def how_many_conformers(mol):
         return 50
     elif nb_rot_bonds <= 12:
         return 200
-    return 300  # This is more 
+    return 300  # This is more
 
 # keep only conformers which are far enough from the reference conformer
 # (the one of lowest energy)
-def rmsd_filter(mol, ref_conf, conf_energies):  # why not use the same name as in the calling code
-    # I think the following is identical; of course you loose the ability for debug output
+def rmsd_filter(mol, ref_conf, conf_energies):
     refConfId = ref_conf.GetId()
     return [(e, curr_conf) for e, curr_conf in conf_energies
-            if AllChem.GetBestRMS(mol, mol, refConfId, curr_conf.GetId()) > rmsd_threshold]
-    # If I remember correctly, the GetBestRMS code is pretty slow if there are a lot of CH3 groups. 
-    # You can get a considerable speedup by ignoring hydrogens. However, that is less trivial
-#     # print("before: %d" % (len(l)))
-#     res = []
-#     for e, curr_conf in l:
-#         currConfId = curr_conf.GetId()
-#         rms = AllChem.GetBestRMS(mol, mol, refConfId, currConfId)
-#         # print("e: %f rms: %f" % (e, rms))
-#         if rms > rmsd_threshold:
-#             res.append((e, curr_conf))
-#     # print("after: %d" % (len(res)))
-#     return res
+            if AllChem.GetBestRMS(mol, mol, refConfId, curr_conf.GetId()) \
+            > rmsd_threshold]
+# P. Gedeck: the GetBestRMS code is pretty slow if there are
+#            a lot of CH3 groups. You can get a considerable speedup
+#            by ignoring hydrogens. However, that is less trivial
 
-# Separating the function definitions from the actual code is more a preference, but also makes it easier to 
-# read the code
-
-# I always use argparse for command line parameter handling. Gives a consistent interface. Probably won't even
-# use more lines of code.
 if len(sys.argv) != 4:
     print("usage: %s N input.smi output.sdf" % sys.argv[0])
     sys.exit(1)
@@ -96,18 +78,15 @@ with closing(Chem.SDWriter(output_sdf)) as writer:
     for name, mol in RobustSmilesMolSupplier(input_smi):
         if mol is None:
             continue
-# vv I would move this part into a separate function. 
         n = how_many_conformers(mol)
         print("init pool size for %s: %d" % (name, n))
         mol_H = Chem.AddHs(mol)
+        res = Chem.Mol(mol_H)
+        res.RemoveAllConformers()
         print("generating starting conformers ...")
-        conf_ids = AllChem.EmbedMultipleConfs(mol_H, n)  # Keep the naming style consistent
-        # If the time for the embedding code is negligible, you can use the following for more concise code
-        # for cid in AllChem.EmbedMultipleConfs(mol_H, n):
         conf_energies = []
-        # FF minimization
         print("FF minimization ...")
-        for cid in conf_ids:
+        for cid in AllChem.EmbedMultipleConfs(mol_H, n):
             ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
             # print("E before: %f" % ff.CalcEnergy())
             ff.Minimize()
@@ -119,22 +98,16 @@ with closing(Chem.SDWriter(output_sdf)) as writer:
         # sort by increasing E
         conf_energies = sorted(conf_energies, key=lambda x: x[0])
         # output non neighbor conformers
-        # nb_out = 0 # is always identical to len(kept)
         kept = []
         print("RMSD pruning ...")
         while len(kept) < n_confs and len(conf_energies) > 0:
             (e, conf) = conf_energies.pop(0)
             kept.append((e, conf))
-            # remove neighbors 
-            conf_energies = rmsd_filter(mol_H, conf, conf_energies)
-# ^^ up to here
-        # write them out
-        print("kept %d confs for %s" % (len(kept), name))
-        res = Chem.Mol(mol_H)
-        res.RemoveAllConformers()
-        for e, conf in kept:
             cid = res.AddConformer(conf, assignId=True)
             name_cid = "%s_%04d" % (name, cid)
             res.SetProp("_Name", name_cid)
-            # print("cid: %d" % cid)
+            # write this one out so that user can see some progress
             writer.write(res, confId=cid)
+            # remove neighbors
+            conf_energies = rmsd_filter(mol_H, conf, conf_energies)
+        print("kept %d confs for %s" % (len(kept), name))
