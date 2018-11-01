@@ -5,28 +5,29 @@
 # see Ebejer et. al.
 # "Freely Available Conformer Generation Methods: How Good Are They?"
 # JCIM, 2012, DOI: 10.1021/ci2004658 for technical details
-
-# Copyright (C) 2017 Francois BERENGER
+#
+# Copyright (C) 2018 Francois Berenger
 # System Cohort Division,
 # Medical Institute of Bioregulation,
 # Kyushu University
 # 3-1-1 Maidashi, Higashi-ku, Fukuoka 812-8582, Japan
-
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
-
+#
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import print_function
 
+import argparse
 import sys
 from contextlib import closing
 
@@ -62,29 +63,46 @@ def rmsd_filter(mol, ref_conf, conf_energies, rmsd_threshold):
 #            a lot of CH3 groups. You can get a considerable speedup
 #            by ignoring hydrogens. However, that is less trivial
 
-if len(sys.argv) != 4:
-    print("usage: %s N input.smi output.sdf" % sys.argv[0])
-    sys.exit(1)
-
-def main():
-    n_confs = int(sys.argv[1])
-    input_smi = sys.argv[2]
-    output_sdf = sys.argv[3]
-    nprocs = 1 # for parallelization
+if __name__ == '__main__':
     # to prune too similar conformers
     rmsd_threshold = 0.35 # Angstrom
+    # CLI parsing setup
+    parser = argparse.ArgumentParser(
+        description = "generate diverse low energy 3D conformers; \
+        up to [n_confs] per molecule from the input file")
+    parser.add_argument("-n", metavar = "n_confs", type = int, default = 1,
+                        dest = "n_confs",
+                        help = "#conformers per molecule (default: 1)")
+    parser.add_argument("-j", metavar="n_procs", type = int, default = 1,
+                        dest = "n_procs",
+                        help = "max number of parallel jobs (default: 1)")
+    parser.add_argument("-i", metavar = "input_smi", dest = "input_smi")
+    parser.add_argument("-o", metavar = "output_sdf", dest = "output_sdf")
+    # parse CLI
+    # show help in case user has no clue of what to do
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+    args = parser.parse_args()
+    n_confs = args.n_confs
+    input_smi = args.input_smi
+    output_sdf = args.output_sdf
+    n_procs = args.n_procs # for parallelization
+    if n_procs > 1:
+        print("n_procs not supported yet", file = sys.stderr)
+    # process molecules
     with closing(Chem.SDWriter(output_sdf)) as writer:
         for name, mol in RobustSmilesMolSupplier(input_smi):
             if mol is None:
                 continue
             n = how_many_conformers(mol)
-            print("init pool size for %s: %d" % (name, n))
+            print("init pool size for %s: %d" % (name, n), file = sys.stderr)
             mol_H = Chem.AddHs(mol)
             res = Chem.Mol(mol_H)
             res.RemoveAllConformers()
-            print("generating starting conformers ...")
+            print("generating starting conformers ...", file = sys.stderr)
             conf_energies = []
-            print("FF minimization ...")
+            print("FF minimization ...", file = sys.stderr)
             for cid in AllChem.EmbedMultipleConfs(mol_H, n):
                 ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
                 # print("E before: %f" % ff.CalcEnergy())
@@ -98,7 +116,7 @@ def main():
             conf_energies = sorted(conf_energies, key=lambda x: x[0])
             # output non neighbor conformers
             kept = 0
-            print("RMSD pruning ...")
+            print("RMSD pruning ...", file = sys.stderr)
             while kept < n_confs and len(conf_energies) > 0:
                 (e, conf) = conf_energies.pop(0)
                 kept += 1
@@ -113,7 +131,4 @@ def main():
                 # remove neighbors
                 conf_energies = rmsd_filter(mol_H, conf, conf_energies,
                                             rmsd_threshold)
-            print("kept %d confs for %s" % (kept, name))
-
-if __name__ == '__main__':
-    main()
+            print("kept %d confs for %s" % (kept, name), file = sys.stderr)
