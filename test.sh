@@ -1,2 +1,2 @@
 #!/bin/bash
-./smi2sdf.py 10 data/test_input.smi data/test_output.sdf
+./smi2sdf.py -n 10 -i data/test_input.smi -o data/test_output.sdf
