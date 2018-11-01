@@ -32,7 +32,7 @@ from contextlib import closing
 
 import rdkit
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, rdMolAlign
 
 def RobustSmilesMolSupplier(filename):
     with open(filename) as f:
@@ -53,7 +53,6 @@ def how_many_conformers(mol):
     return 300  # This is more
 
 # keep only conformers which are far enough from the reference conformer
-# (the one of lowest energy)
 def rmsd_filter(mol, ref_conf, conf_energies, rmsd_threshold):
     refConfId = ref_conf.GetId()
     return [(e, curr_conf) for e, curr_conf in conf_energies
@@ -98,19 +97,23 @@ def main():
             # sort by increasing E
             conf_energies = sorted(conf_energies, key=lambda x: x[0])
             # output non neighbor conformers
-            kept = []
+            kept = 0
             print("RMSD pruning ...")
-            while len(kept) < n_confs and len(conf_energies) > 0:
+            while kept < n_confs and len(conf_energies) > 0:
                 (e, conf) = conf_energies.pop(0)
-                kept.append((e, conf))
+                kept += 1
                 cid = res.AddConformer(conf, assignId=True)
+                # align conformers to the one of lowest energy
+                if cid != 0:
+                    rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
                 name_cid = "%s_%04d" % (name, cid)
                 res.SetProp("_Name", name_cid)
                 # write this one out so that user can see some progress
                 writer.write(res, confId=cid)
                 # remove neighbors
-                conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
-            print("kept %d confs for %s" % (len(kept), name))
+                conf_energies = rmsd_filter(mol_H, conf, conf_energies,
+                                            rmsd_threshold)
+            print("kept %d confs for %s" % (kept, name))
 
 if __name__ == '__main__':
     main()
