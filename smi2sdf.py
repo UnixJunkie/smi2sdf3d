@@ -66,7 +66,7 @@ def rmsd_filter(mol, ref_conf, conf_energies, threshold):
             res.append((e, curr_conf))
     return res
 
-def process_one(name, mol, n_confs, writer):
+def process_one(name, mol, n_confs):
     n = how_many_conformers(mol)
     print("init pool size for %s: %d" % (name, n), file = sys.stderr)
     mol_H = Chem.AddHs(mol)
@@ -76,7 +76,7 @@ def process_one(name, mol, n_confs, writer):
     conf_energies = []
     print("FF minimization ...", file = sys.stderr)
     for cid in AllChem.EmbedMultipleConfs(mol_H, n):
-        ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
+        ff = AllChem.UFFGetMoleculeForceField(mol_H, confId = cid)
         # print("E before: %f" % ff.CalcEnergy())
         ff.Minimize()
         energy = ff.CalcEnergy()
@@ -85,7 +85,7 @@ def process_one(name, mol, n_confs, writer):
         # print("cid: %d e: %f" % (cid, energy))
         conf_energies.append((energy, conformer))
     # sort by increasing E
-    conf_energies = sorted(conf_energies, key=lambda x: x[0])
+    conf_energies = sorted(conf_energies, key = lambda x: x[0])
     # output non neighbor conformers
     kept = 0
     print("RMSD pruning ...", file = sys.stderr)
@@ -98,11 +98,10 @@ def process_one(name, mol, n_confs, writer):
             rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
         name_cid = "%s_%04d" % (name, cid)
         res.SetProp("_Name", name_cid)
-        # write this one out so that user can see some progress
-        writer.write(res, confId=cid)
         # remove neighbors
         conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
     print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+    return res
 
 def worker_process(jobs_q, results_q, n_confs):
     for name, mol in iter(jobs_q.get, 'STOP'):
@@ -208,4 +207,9 @@ if __name__ == '__main__':
             for name, mol in RobustSmilesMolSupplier(input_smi):
                 if mol is None:
                     continue
-                process_one(name, mol, n_confs, writer)
+                conformers = process_one(name, mol, n_confs)
+                for c in conformers.GetConformers():
+                    cid = c.GetId()
+                    name_cid = "%s_%03d" % (name, cid)
+                    conformers.SetProp("_Name", name_cid)
+                    writer.write(conformers, confId = cid)
