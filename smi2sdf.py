@@ -54,14 +54,17 @@ def how_many_conformers(mol):
     return 300  # This is more
 
 # keep only conformers which are far enough from the reference conformer
-def rmsd_filter(mol, ref_conf, conf_energies, rmsd_threshold):
-    refConfId = ref_conf.GetId()
-    return [(e, curr_conf) for e, curr_conf in conf_energies
-            if AllChem.GetBestRMS(mol, mol, refConfId, curr_conf.GetId()) \
-            > rmsd_threshold]
-# P. Gedeck: the GetBestRMS code is pretty slow if there are
-#            a lot of CH3 groups. You can get a considerable speedup
-#            by ignoring hydrogens. However, that is less trivial
+def rmsd_filter(mol, ref_conf, conf_energies, threshold):
+    # we use heavy atoms RMSD; not all atoms (Peter Gedeck's suggestion)
+    mol_noH = Chem.RemoveHs(mol)
+    ref_conf_id = ref_conf.GetId()
+    res = []
+    for e, curr_conf in conf_energies:
+        curr_conf_id = curr_conf.GetId()
+        rms = AllChem.GetConformerRMS(mol_noH, ref_conf_id, curr_conf_id)
+        if rms > threshold:
+            res.append((e, curr_conf))
+    return res
 
 def process_one(name, mol, n_confs, writer):
     n = how_many_conformers(mol)
