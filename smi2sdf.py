@@ -28,10 +28,10 @@
 from __future__ import print_function
 
 import argparse
+import multiprocessing as mp
+import rdkit
 import sys
 from contextlib import closing
-
-import rdkit
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 
@@ -63,6 +63,93 @@ def rmsd_filter(mol, ref_conf, conf_energies, rmsd_threshold):
 #            a lot of CH3 groups. You can get a considerable speedup
 #            by ignoring hydrogens. However, that is less trivial
 
+def process_one(name, mol, n_confs, writer):
+    n = how_many_conformers(mol)
+    print("init pool size for %s: %d" % (name, n), file = sys.stderr)
+    mol_H = Chem.AddHs(mol)
+    res = Chem.Mol(mol_H)
+    res.RemoveAllConformers()
+    print("generating starting conformers ...", file = sys.stderr)
+    conf_energies = []
+    print("FF minimization ...", file = sys.stderr)
+    for cid in AllChem.EmbedMultipleConfs(mol_H, n):
+        ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
+        # print("E before: %f" % ff.CalcEnergy())
+        ff.Minimize()
+        energy = ff.CalcEnergy()
+        # print("E after: %f" % energy)
+        conformer = mol_H.GetConformer(cid)
+        # print("cid: %d e: %f" % (cid, energy))
+        conf_energies.append((energy, conformer))
+    # sort by increasing E
+    conf_energies = sorted(conf_energies, key=lambda x: x[0])
+    # output non neighbor conformers
+    kept = 0
+    print("RMSD pruning ...", file = sys.stderr)
+    while kept < n_confs and len(conf_energies) > 0:
+        (e, conf) = conf_energies.pop(0)
+        kept += 1
+        cid = res.AddConformer(conf, assignId = True)
+        # align conformers to the one of lowest energy
+        if cid != 0:
+            rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
+        name_cid = "%s_%04d" % (name, cid)
+        res.SetProp("_Name", name_cid)
+        # write this one out so that user can see some progress
+        writer.write(res, confId=cid)
+        # remove neighbors
+        conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
+    print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+
+def worker_process(jobs_q, results_q, n_confs):
+    for name, mol in iter(jobs_q.get, 'STOP'):
+        n = how_many_conformers(mol)
+        # print("init pool size for %s: %d" % (name, n), file = sys.stderr)
+        mol_H = Chem.AddHs(mol)
+        res = Chem.Mol(mol_H)
+        res.RemoveAllConformers()
+        # print("generating starting conformers ...", file = sys.stderr)
+        conf_energies = []
+        # print("FF minimization ...", file = sys.stderr)
+        for cid in AllChem.EmbedMultipleConfs(mol_H, n):
+            ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
+            # print("E before: %f" % ff.CalcEnergy())
+            ff.Minimize()
+            energy = ff.CalcEnergy()
+            # print("E after: %f" % energy)
+            conformer = mol_H.GetConformer(cid)
+            # print("cid: %d e: %f" % (cid, energy))
+            conf_energies.append((energy, conformer))
+        # sort by increasing E
+        conf_energies = sorted(conf_energies, key=lambda x: x[0])
+        # output non neighbor conformers
+        kept = 0
+        # print("RMSD pruning ...", file = sys.stderr)
+        while kept < n_confs and len(conf_energies) > 0:
+            (e, conf) = conf_energies.pop(0)
+            kept += 1
+            cid = res.AddConformer(conf, assignId = True)
+            # align conformers to the one of lowest energy
+            if cid != 0:
+                rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
+            name_cid = "%s_%04d" % (name, cid)
+            res.SetProp("_Name", name_cid)
+            # write this one out so that user can see some progress
+            results_q.put((res, cid))
+            # remove neighbors
+            conf_energies = rmsd_filter(mol_H, conf, conf_energies,
+                                        rmsd_threshold)
+        # print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+    # tell the multiplexer I am done
+    # print('I am done')
+    results_q.put('STOP')
+
+def multiplexer_process(results_q, output_sdf, nb_workers):
+    with closing(Chem.SDWriter(output_sdf)) as writer:
+        for i in range(nb_workers):
+            for res, cid in iter(results_q.get, 'STOP'):
+                writer.write(res, confId = cid)
+
 if __name__ == '__main__':
     # to prune too similar conformers
     rmsd_threshold = 0.35 # Angstrom
@@ -89,46 +176,33 @@ if __name__ == '__main__':
     output_sdf = args.output_sdf
     n_procs = args.n_procs # for parallelization
     if n_procs > 1:
-        print("n_procs not supported yet", file = sys.stderr)
-    # process molecules
-    with closing(Chem.SDWriter(output_sdf)) as writer:
+        # process molecules in parallel
+        # multiprocessing queues
+        jobs_queue = mp.Queue()
+        results_queue = mp.Queue()
+        # start workers
+        # print('starting workers')
+        for i in range(n_procs):
+            mp.Process(target = worker_process,
+                       args = (jobs_queue, results_queue, n_confs)).start()
+        # start the multiplexer
+        # print('starting multiplexer')
+        mp.Process(target = multiplexer_process,
+                   args = (results_queue, output_sdf, n_procs)).start()
+        # feed workers
+        # print('feeding workers')
         for name, mol in RobustSmilesMolSupplier(input_smi):
             if mol is None:
                 continue
-            n = how_many_conformers(mol)
-            print("init pool size for %s: %d" % (name, n), file = sys.stderr)
-            mol_H = Chem.AddHs(mol)
-            res = Chem.Mol(mol_H)
-            res.RemoveAllConformers()
-            print("generating starting conformers ...", file = sys.stderr)
-            conf_energies = []
-            print("FF minimization ...", file = sys.stderr)
-            for cid in AllChem.EmbedMultipleConfs(mol_H, n):
-                ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
-                # print("E before: %f" % ff.CalcEnergy())
-                ff.Minimize()
-                energy = ff.CalcEnergy()
-                # print("E after: %f" % energy)
-                conformer = mol_H.GetConformer(cid)
-                # print("cid: %d e: %f" % (cid, energy))
-                conf_energies.append((energy, conformer))
-            # sort by increasing E
-            conf_energies = sorted(conf_energies, key=lambda x: x[0])
-            # output non neighbor conformers
-            kept = 0
-            print("RMSD pruning ...", file = sys.stderr)
-            while kept < n_confs and len(conf_energies) > 0:
-                (e, conf) = conf_energies.pop(0)
-                kept += 1
-                cid = res.AddConformer(conf, assignId=True)
-                # align conformers to the one of lowest energy
-                if cid != 0:
-                    rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
-                name_cid = "%s_%04d" % (name, cid)
-                res.SetProp("_Name", name_cid)
-                # write this one out so that user can see some progress
-                writer.write(res, confId=cid)
-                # remove neighbors
-                conf_energies = rmsd_filter(mol_H, conf, conf_energies,
-                                            rmsd_threshold)
-            print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+            jobs_queue.put((name, mol))
+        # tell workers that no more jobs will come
+        for i in range(n_procs):
+            jobs_queue.put('STOP')
+        # print('no more jobs')
+    else:
+        # process molecules sequentially
+        with closing(Chem.SDWriter(output_sdf)) as writer:
+            for name, mol in RobustSmilesMolSupplier(input_smi):
+                if mol is None:
+                    continue
+                process_one(name, mol, n_confs, writer)
