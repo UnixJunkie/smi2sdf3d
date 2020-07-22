@@ -110,21 +110,24 @@ def worker_process(jobs_q, results_q, n_confs):
     # tell the multiplexer I am done
     results_q.put('STOP')
 
-def write_out_confs(name_confs, writer):
+def write_out_confs(rename, name_confs, writer):
     name, confs = name_confs
     for c in confs.GetConformers():
         cid = c.GetId()
-        # assign proper name to each conformer
-        name_cid = "%s_%03d" % (name, cid)
-        # the following renames the molecule, but we have no choice
-        confs.SetProp("_Name", name_cid)
+        if rename:
+            # append conformer id to molecule name
+            name_cid = "%s_%03d" % (name, cid)
+            # the following renames the molecule, but we have no choice
+            confs.SetProp("_Name", name_cid)
+        else:
+            confs.SetProp("_Name", name)
         writer.write(confs, confId = cid)
 
-def multiplexer_process(results_q, output_sdf, nb_workers):
+def multiplexer_process(rename, results_q, output_sdf, nb_workers):
     with closing(Chem.SDWriter(output_sdf)) as writer:
         for i in range(nb_workers):
             for confs in iter(results_q.get, 'STOP'):
-                write_out_confs(confs, writer)
+                write_out_confs(rename, confs, writer)
 
 if __name__ == '__main__':
     # to prune too similar conformers
@@ -141,6 +144,10 @@ if __name__ == '__main__':
                         help = "max number of parallel jobs (default: 1)")
     parser.add_argument("-i", metavar = "input_smi", dest = "input_smi")
     parser.add_argument("-o", metavar = "output_sdf", dest = "output_sdf")
+    parser.add_argument('--rename', dest='rename', action='store_true',
+                        help = "append conformer id to molecule name \
+                        (default=False")
+    parser.set_defaults(rename=False)
     # parse CLI
     # show help in case user has no clue of what to do
     if len(sys.argv) == 1:
@@ -151,6 +158,7 @@ if __name__ == '__main__':
     input_smi = args.input_smi
     output_sdf = args.output_sdf
     n_procs = args.n_procs # for parallelization
+    rename = args.rename
     if n_procs > 1:
         # process molecules in parallel
         # multiprocessing queues
@@ -164,7 +172,7 @@ if __name__ == '__main__':
         # start the multiplexer
         # print('starting multiplexer')
         mp.Process(target = multiplexer_process,
-                   args = (results_queue, output_sdf, n_procs)).start()
+                   args = (rename, results_queue, output_sdf, n_procs)).start()
         # feed workers
         # print('feeding workers')
         for name, mol in RobustSmilesMolSupplier(input_smi):
@@ -182,4 +190,4 @@ if __name__ == '__main__':
                 if mol is None:
                     continue
                 conformers = process_one(name, mol, n_confs)
-                write_out_confs(conformers, writer)
+                write_out_confs(rename, conformers, writer)
