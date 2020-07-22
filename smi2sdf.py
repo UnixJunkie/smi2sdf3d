@@ -99,8 +99,9 @@ def process_one(name, mol, n_confs):
         # remove neighbors
         conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
     print("kept %d confs for %s" % (kept, name), file = sys.stderr)
-    res.SetProp("_Name", name) # FBR: not sure this is working
-    return res
+    name_res = (name, res)
+    #res.SetProp("_Name", name) # !!! not working !!!
+    return name_res
 
 def worker_process(jobs_q, results_q, n_confs):
     for name, mol in iter(jobs_q.get, 'STOP'):
@@ -109,12 +110,14 @@ def worker_process(jobs_q, results_q, n_confs):
     # tell the multiplexer I am done
     results_q.put('STOP')
 
-def write_out_confs(confs, writer):
+def write_out_confs(name_confs, writer):
+    name, confs = name_confs
     for c in confs.GetConformers():
         cid = c.GetId()
-        # FBR:TODO ??? assign proper name to each conformer
-        # name_cid = "%s_%03d" % (name, cid)
-        # c.SetProp("_Name", name_cid)
+        # assign proper name to each conformer
+        name_cid = "%s_%03d" % (name, cid)
+        # the following renames the molecule, but we have no choice
+        confs.SetProp("_Name", name_cid)
         writer.write(confs, confId = cid)
 
 def multiplexer_process(results_q, output_sdf, nb_workers):
