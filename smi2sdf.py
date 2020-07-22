@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # generation of up to N low energy conformers
 # from 2D input (smi) to 3D output (sdf)
@@ -96,61 +96,32 @@ def process_one(name, mol, n_confs):
         # align conformers to the one of lowest energy
         if cid != 0:
             rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
-        name_cid = "%s_%04d" % (name, cid)
-        res.SetProp("_Name", name_cid)
         # remove neighbors
         conf_energies = rmsd_filter(mol_H, conf, conf_energies, rmsd_threshold)
     print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+    res.SetProp("_Name", name) # FBR: not sure this is working
     return res
 
 def worker_process(jobs_q, results_q, n_confs):
     for name, mol in iter(jobs_q.get, 'STOP'):
-        n = how_many_conformers(mol)
-        # print("init pool size for %s: %d" % (name, n), file = sys.stderr)
-        mol_H = Chem.AddHs(mol)
-        res = Chem.Mol(mol_H)
-        res.RemoveAllConformers()
-        # print("generating starting conformers ...", file = sys.stderr)
-        conf_energies = []
-        # print("FF minimization ...", file = sys.stderr)
-        for cid in AllChem.EmbedMultipleConfs(mol_H, n):
-            ff = AllChem.UFFGetMoleculeForceField(mol_H, confId=cid)
-            # print("E before: %f" % ff.CalcEnergy())
-            ff.Minimize()
-            energy = ff.CalcEnergy()
-            # print("E after: %f" % energy)
-            conformer = mol_H.GetConformer(cid)
-            # print("cid: %d e: %f" % (cid, energy))
-            conf_energies.append((energy, conformer))
-        # sort by increasing E
-        conf_energies = sorted(conf_energies, key=lambda x: x[0])
-        # output non neighbor conformers
-        kept = 0
-        # print("RMSD pruning ...", file = sys.stderr)
-        while kept < n_confs and len(conf_energies) > 0:
-            (e, conf) = conf_energies.pop(0)
-            kept += 1
-            cid = res.AddConformer(conf, assignId = True)
-            # align conformers to the one of lowest energy
-            if cid != 0:
-                rdMolAlign.AlignMol(res, res, prbCid = cid, refCid = 0)
-            name_cid = "%s_%04d" % (name, cid)
-            res.SetProp("_Name", name_cid)
-            # write this one out so that user can see some progress
-            results_q.put((res, cid))
-            # remove neighbors
-            conf_energies = rmsd_filter(mol_H, conf, conf_energies,
-                                        rmsd_threshold)
-        # print("kept %d confs for %s" % (kept, name), file = sys.stderr)
+        confs = process_one(name, mol, n_confs)
+        results_q.put(confs)
     # tell the multiplexer I am done
-    # print('I am done')
     results_q.put('STOP')
+
+def write_out_confs(confs, writer):
+    for c in confs.GetConformers():
+        cid = c.GetId()
+        # FBR:TODO ??? assign proper name to each conformer
+        # name_cid = "%s_%03d" % (name, cid)
+        # c.SetProp("_Name", name_cid)
+        writer.write(confs, confId = cid)
 
 def multiplexer_process(results_q, output_sdf, nb_workers):
     with closing(Chem.SDWriter(output_sdf)) as writer:
         for i in range(nb_workers):
-            for res, cid in iter(results_q.get, 'STOP'):
-                writer.write(res, confId = cid)
+            for confs in iter(results_q.get, 'STOP'):
+                write_out_confs(confs, writer)
 
 if __name__ == '__main__':
     # to prune too similar conformers
@@ -208,8 +179,4 @@ if __name__ == '__main__':
                 if mol is None:
                     continue
                 conformers = process_one(name, mol, n_confs)
-                for c in conformers.GetConformers():
-                    cid = c.GetId()
-                    name_cid = "%s_%03d" % (name, cid)
-                    conformers.SetProp("_Name", name_cid)
-                    writer.write(conformers, confId = cid)
+                write_out_confs(conformers, writer)
